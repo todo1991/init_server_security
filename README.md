@@ -38,6 +38,33 @@ sudo SSH_PORT=2222 TCP_PORTS="80, 443" ADMIN_IPS="1.2.3.4" SSH_DISABLE_PASSWORD=
 | `FORWARD_POLICY` | `accept` | `accept` để tương thích Docker; `drop` nếu server không dùng Docker/routing |
 | `SSH_DISABLE_PASSWORD` | `0` | `1` = tắt đăng nhập SSH bằng mật khẩu (script tự từ chối nếu chưa có authorized_keys nào) |
 
+## Quản lý IP bị chặn
+
+Firewall có 3 loại danh sách, xem bằng `nft list set`:
+
+```
+nft list set inet firewall block_v4          # chặn tay (block_v6 cho IPv6)
+nft list set inet firewall ssh_blackhole_v4  # tự động ban 24h, kèm "expires" đếm ngược
+nft list set inet firewall ssh_ratelimit_v4  # đang bị theo dõi rate-limit (chưa chặn)
+```
+
+Thao tác thường dùng:
+
+```
+# Chặn / gỡ chặn tay một IP (áp dụng ngay, không cần reload)
+nft add element inet firewall block_v4 { 1.2.3.4 }
+nft delete element inet firewall block_v4 { 1.2.3.4 }
+
+# Gỡ ban tự động trước hạn
+nft delete element inet firewall ssh_blackhole_v4 { 1.2.3.4 }
+
+# Lịch sử: gói bị chặn / IP bị tự ban
+journalctl -k | grep nft-drop
+journalctl -k | grep nft-ban
+```
+
+Lưu ý: IP thêm bằng `nft add element` sẽ mất khi reload/reboot — muốn chặn bền vững, chạy lại script với `BLOCK_IPS="1.2.3.4, ..."` (hoặc thêm vào `elements` của set `block_v4` trong `/etc/nftables.conf` rồi `systemctl reload nftables`). Set `ssh_blackhole` là động, tự hết hạn sau 24h, không cần dọn.
+
 ## Lưu ý khi dùng Docker
 
 - **Cài Docker trước hay sau script đều được**: firewall chỉ quản lý bảng `inet firewall` riêng (không `flush ruleset`), Docker tự tạo và quản lý rule của nó. Chạy lại script trên máy đang chạy Docker cũng an toàn.
