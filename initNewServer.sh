@@ -112,6 +112,10 @@ ${admin_rules}    ct state vmap { invalid : drop, established : accept, related 
 
     tcp dport ${SSH_PORT} ct state new jump ssh_in
 ${extra_rules}
+    # DHCP broadcast từ máy khác cùng mạng L2: vô hại, drop im lặng cho sạch log
+    # (chỉ chiều client->server; DHCP của chính máy này không đi qua rule này)
+    meta pkttype broadcast udp sport 68 udp dport 67 counter drop
+
     # Log gói bị chặn (giới hạn tần suất): xem bằng journalctl -k | grep nft-drop
     limit rate 5/minute burst 10 packets counter log prefix "nft-drop: "
   }
