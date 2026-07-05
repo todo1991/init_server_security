@@ -2,7 +2,7 @@
 
 Script khởi tạo VPS Ubuntu 22.04+:
 
-- **Firewall nftables**: chặn mặc định, chỉ mở port khai báo; tự tắt ufw nếu đang bật để tránh xung đột; log gói bị chặn (`journalctl -k | grep nft-drop`)
+- **Firewall nftables**: chặn mặc định, chỉ mở SSH (thêm port khác qua `TCP_PORTS`/`UDP_PORTS` khi cần); tự tắt ufw nếu đang bật để tránh xung đột; log gói bị chặn (`journalctl -k | grep nft-drop`)
 - **SSH rate-limit**: 6 kết nối mới/phút mỗi IP (IPv6 tính theo /64), tự xóa limit khi đăng nhập thành công (PAM hook)
 - **Chống tự khóa**: whitelist IP quản trị (`ADMIN_IPS`) + tự rollback firewall sau ~3 phút nếu không xác nhận SSH vẫn vào được
 - **Hardening sshd**: MaxAuthTries, LoginGraceTime, MaxStartups...; chỉ siết root login / password login khi đã có authorized_keys
@@ -29,7 +29,7 @@ sudo SSH_PORT=2222 TCP_PORTS="80, 443" ADMIN_IPS="1.2.3.4" SSH_DISABLE_PASSWORD=
 | Biến | Mặc định | Ý nghĩa |
 |---|---|---|
 | `SSH_PORT` | `22` | Port SSH (được rate-limit) |
-| `TCP_PORTS` | `80, 443` | Port TCP mở thêm; đặt rỗng (`TCP_PORTS=`) để không mở |
+| `TCP_PORTS` | *(không)* | Port TCP mở thêm cho dịch vụ chạy **trên host**, ví dụ `80, 443` nếu nginx cài trực tiếp. Port publish của Docker không cần khai ở đây |
 | `UDP_PORTS` | *(không)* | Port UDP mở thêm, ví dụ `51820` cho WireGuard |
 | `ADMIN_IPS` | *(không)* | IP/CIDR quản trị (cách nhau dấu phẩy, v4+v6): accept mọi traffic, không rate-limit |
 | `FORWARD_POLICY` | `accept` | `accept` để tương thích Docker; `drop` nếu server không dùng Docker/routing |

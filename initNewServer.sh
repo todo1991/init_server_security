@@ -6,7 +6,8 @@
 #
 # Tùy biến qua biến môi trường:
 #   SSH_PORT=2222                        port SSH (mặc định 22)
-#   TCP_PORTS="80, 443, 8080"            port TCP mở thêm (mặc định "80, 443"; đặt rỗng để không mở)
+#   TCP_PORTS="80, 443"                  port TCP mở thêm cho dịch vụ chạy TRÊN HOST (mặc định không mở;
+#                                        port publish của Docker đi đường forward, không cần khai ở đây)
 #   UDP_PORTS="51820"                    port UDP mở thêm (mặc định không mở)
 #   ADMIN_IPS="1.2.3.4, 2001:db8::/48"   IP/dải IP quản trị: accept mọi traffic, bỏ qua rate-limit
 #   FORWARD_POLICY=drop                  mặc định accept (cần cho Docker); đặt drop nếu không dùng Docker
@@ -19,7 +20,7 @@
 set -e
 
 SSH_PORT="${SSH_PORT:-22}"
-TCP_PORTS="${TCP_PORTS-80, 443}"
+TCP_PORTS="${TCP_PORTS-}"
 UDP_PORTS="${UDP_PORTS-}"
 ADMIN_IPS="${ADMIN_IPS-}"
 FORWARD_POLICY="${FORWARD_POLICY:-accept}"
