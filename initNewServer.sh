@@ -242,14 +242,25 @@ if [ -n "$BACKUP" ]; then
 fi
 ROLLBACK_CMD="$ROLLBACK_CMD; true"
 
-HAS_TTY=0
-if [ -t 1 ] && { : </dev/tty; } 2>/dev/null; then
-  HAS_TTY=1
+if [ -t 1 ]; then
+  # Dây an toàn chống tự khóa: hẹn rollback firewall sau 3 phút, chỉ hủy khi
+  # người dùng mở được SSH MỚI và chạy nft-confirm — chính hành động đó chứng
+  # minh firewall không khóa họ. (Không đọc phím từ /dev/tty: với
+  # 'curl | sudo bash' trên sudo bật use_pty, phím gõ không đến được script.)
+  cat >/usr/local/bin/nft-confirm <<'EOS'
+#!/bin/bash
+if [ "$(id -u)" -ne 0 ]; then
+  echo "Chạy: sudo nft-confirm" >&2
+  exit 1
 fi
+systemctl stop nft-rollback.timer >/dev/null 2>&1
+systemctl reset-failed nft-rollback.service >/dev/null 2>&1
+touch /run/nft-rollback-confirmed
+echo "Đã xác nhận — giữ firewall, hủy hẹn rollback."
+EOS
+  chmod 0755 /usr/local/bin/nft-confirm
+  rm -f /run/nft-rollback-confirmed
 
-if [ "$HAS_TTY" = "1" ]; then
-  # Dây an toàn chống tự khóa: hẹn rollback firewall sau 3 phút,
-  # chỉ hủy khi người dùng xác nhận vẫn SSH vào được.
   systemctl stop nft-rollback.timer >/dev/null 2>&1 || true
   systemctl reset-failed nft-rollback.service >/dev/null 2>&1 || true
   systemd-run --quiet --on-active=180 --unit=nft-rollback bash -c "$ROLLBACK_CMD"
@@ -258,14 +269,25 @@ if [ "$HAS_TTY" = "1" ]; then
   nft -f /etc/nftables.conf
   systemctl start nftables >/dev/null 2>&1 || true
   echo
-  echo "  !!! Firewall ĐÃ ÁP DỤNG. Hãy MỞ MỘT KẾT NỐI SSH MỚI để kiểm tra còn vào được không."
-  if read -r -t 150 -p "  Nhấn Enter để GIỮ firewall (không xác nhận sẽ tự rollback sau ~3 phút): " </dev/tty; then
-    systemctl stop nft-rollback.timer >/dev/null 2>&1 || true
-    echo "  - Đã xác nhận, hủy hẹn rollback."
+  echo "  !!! Firewall ĐÃ ÁP DỤNG. Trong ~3 phút, hãy MỞ MỘT KẾT NỐI SSH MỚI tới server"
+  echo "      và chạy lệnh:  sudo nft-confirm"
+  echo "      (SSH mới vào được = firewall không khóa bạn. Không xác nhận -> tự rollback.)"
+  CONFIRMED=0
+  WAITED=0
+  while [ "$WAITED" -lt 168 ]; do
+    if [ -f /run/nft-rollback-confirmed ]; then
+      CONFIRMED=1
+      break
+    fi
+    sleep 3
+    WAITED=$((WAITED + 3))
+    [ $((WAITED % 30)) -eq 0 ] && echo "  ... chờ xác nhận, còn ~$((180 - WAITED))s trước khi tự rollback"
+  done
+  if [ "$CONFIRMED" = "1" ]; then
+    echo "  - Đã nhận xác nhận, firewall được giữ."
   else
-    echo
-    echo "  - KHÔNG có xác nhận: firewall sẽ TỰ ROLLBACK sau ~3 phút."
-    echo "    Nếu vẫn muốn giữ, chạy ngay: systemctl stop nft-rollback.timer"
+    echo "  - KHÔNG nhận được xác nhận: firewall sẽ TỰ ROLLBACK trong chốc lát."
+    echo "    Muốn áp dụng lại: chạy lại script và xác nhận bằng 'sudo nft-confirm'."
   fi
 else
   nft -f /etc/nftables.conf

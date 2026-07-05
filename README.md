@@ -15,7 +15,7 @@ Script khởi tạo VPS Ubuntu 22.04+:
 curl -fsSL https://raw.githubusercontent.com/todo1991/init_server_security/refs/heads/main/initNewServer.sh | sudo bash
 ```
 
-Sau khi firewall áp dụng, script yêu cầu **mở một kết nối SSH mới** để kiểm tra rồi nhấn Enter xác nhận. Không xác nhận → tự rollback về cấu hình cũ sau ~3 phút (giữ lại bằng tay: `systemctl stop nft-rollback.timer`).
+Sau khi firewall áp dụng, **mở một kết nối SSH mới** tới server và chạy `sudo nft-confirm` trong vòng ~3 phút — chính việc SSH mới vào được là bằng chứng bạn không bị khóa. Không xác nhận → firewall tự rollback về cấu hình cũ.
 
 ## Tùy biến
 
