@@ -42,6 +42,7 @@ render_case
 render_case SSH_PORT=2222 TCP_PORTS="80, 443, 8080" UDP_PORTS="51820"
 render_case TCP_PORTS="80, 443"
 render_case ADMIN_IPS="203.0.113.7, 198.51.100.0/24, 2001:db8::/48"
+render_case BLOCK_IPS="203.0.113.99, 192.0.2.0/24, 2001:db8:bad::/48"
 render_case FORWARD_POLICY=drop
 if [ "$(id -u)" -ne 0 ]; then
   echo "  (không phải root: mới kiểm tra được cú pháp, chưa kiểm tra kernel-level)"

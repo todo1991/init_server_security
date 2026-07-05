@@ -10,6 +10,7 @@
 #                                        port publish của Docker đi đường forward, không cần khai ở đây)
 #   UDP_PORTS="51820"                    port UDP mở thêm (mặc định không mở)
 #   ADMIN_IPS="1.2.3.4, 2001:db8::/48"   IP/dải IP quản trị: accept mọi traffic, bỏ qua rate-limit
+#   BLOCK_IPS="5.6.7.8, 2001:db8::/32"   IP/dải IP chặn hẳn (drop mọi traffic)
 #   FORWARD_POLICY=drop                  mặc định accept (cần cho Docker); đặt drop nếu không dùng Docker
 #   SSH_DISABLE_PASSWORD=1               tắt đăng nhập SSH bằng mật khẩu (chỉ áp dụng khi đã có authorized_keys)
 #
@@ -23,6 +24,7 @@ SSH_PORT="${SSH_PORT:-22}"
 TCP_PORTS="${TCP_PORTS-}"
 UDP_PORTS="${UDP_PORTS-}"
 ADMIN_IPS="${ADMIN_IPS-}"
+BLOCK_IPS="${BLOCK_IPS-}"
 FORWARD_POLICY="${FORWARD_POLICY:-accept}"
 SSH_DISABLE_PASSWORD="${SSH_DISABLE_PASSWORD:-0}"
 
@@ -31,22 +33,35 @@ case "$FORWARD_POLICY" in
   *) echo "FORWARD_POLICY phải là 'accept' hoặc 'drop'" >&2; exit 1 ;;
 esac
 
-# Phân loại ADMIN_IPS thành v4/v6
-ADMIN_V4=""
-ADMIN_V6=""
-IFS=',' read -ra _admin_ips <<<"$ADMIN_IPS"
-for _ip in "${_admin_ips[@]}"; do
-  _ip=$(echo "$_ip" | tr -d '[:space:]')
-  [ -z "$_ip" ] && continue
-  if [[ $_ip == *:* ]]; then
-    ADMIN_V6="${ADMIN_V6:+$ADMIN_V6, }$_ip"
-  else
-    ADMIN_V4="${ADMIN_V4:+$ADMIN_V4, }$_ip"
-  fi
-done
+# Phân loại danh sách IP thành v4/v6 (in ra 2 dòng: v4 rồi v6)
+split_ips_v4_v6() {
+  local list=$1 ip v4="" v6=""
+  local -a ips=()
+  IFS=',' read -ra ips <<<"$list"
+  for ip in "${ips[@]}"; do
+    ip=$(echo "$ip" | tr -d '[:space:]')
+    [ -z "$ip" ] && continue
+    if [[ $ip == *:* ]]; then
+      v6="${v6:+$v6, }$ip"
+    else
+      v4="${v4:+$v4, }$ip"
+    fi
+  done
+  printf '%s\n%s\n' "$v4" "$v6"
+}
+mapfile -t _admin < <(split_ips_v4_v6 "$ADMIN_IPS")
+ADMIN_V4=${_admin[0]-}
+ADMIN_V6=${_admin[1]-}
+mapfile -t _block < <(split_ips_v4_v6 "$BLOCK_IPS")
+BLOCK_V4=${_block[0]-}
+BLOCK_V6=${_block[1]-}
 
 render_nftables_config() {
-  local extra_rules="" admin_sets="" admin_rules=""
+  local extra_rules="" admin_sets="" admin_rules="" block4_elems="" block6_elems=""
+  [ -n "$BLOCK_V4" ] && block4_elems="    elements = { ${BLOCK_V4} }
+"
+  [ -n "$BLOCK_V6" ] && block6_elems="    elements = { ${BLOCK_V6} }
+"
   [ -n "$TCP_PORTS" ] && extra_rules="${extra_rules}    tcp dport { ${TCP_PORTS} } counter accept
 "
   [ -n "$UDP_PORTS" ] && extra_rules="${extra_rules}    udp dport { ${UDP_PORTS} } counter accept
@@ -81,7 +96,18 @@ add table inet firewall
 delete table inet firewall
 
 table inet firewall {
-${admin_sets}  set ssh_ratelimit_v4 {
+${admin_sets}  # Chặn tay: sửa nóng bằng 'nft add/delete element inet firewall block_v4 { IP }'
+  # (muốn giữ qua reload thì thêm vào BLOCK_IPS hoặc /etc/nftables.conf)
+  set block_v4 {
+    type ipv4_addr
+    flags interval
+${block4_elems}  }
+  set block_v6 {
+    type ipv6_addr
+    flags interval
+${block6_elems}  }
+
+  set ssh_ratelimit_v4 {
     type ipv4_addr
     size 65535
     flags dynamic,timeout
@@ -94,15 +120,48 @@ ${admin_sets}  set ssh_ratelimit_v4 {
     timeout 1h
   }
 
+  # Đo tốc độ phần VƯỢT rate-limit; vượt nhiều -> tự ban vào blackhole
+  set ssh_abuse_v4 {
+    type ipv4_addr
+    size 65535
+    flags dynamic,timeout
+    timeout 10m
+  }
+  set ssh_abuse_v6 {
+    type ipv6_addr
+    size 65535
+    flags dynamic,timeout
+    timeout 10m
+  }
+  set ssh_blackhole_v4 {
+    type ipv4_addr
+    size 65535
+    flags dynamic,timeout
+    timeout 24h
+  }
+  set ssh_blackhole_v6 {
+    type ipv6_addr
+    size 65535
+    flags dynamic,timeout
+    timeout 24h
+  }
+
   chain ssh_in {
     add @ssh_ratelimit_v4 { ip saddr limit rate 6/minute burst 5 packets } counter accept
     add @ssh_ratelimit_v6 { ip6 saddr & ffff:ffff:ffff:ffff:: limit rate 6/minute burst 5 packets } counter accept
+    # Rơi xuống đây = đã vượt rate-limit; còn nã tiếp dồn dập -> ban 24h
+    add @ssh_abuse_v4 { ip saddr limit rate over 20/minute burst 20 packets } add @ssh_blackhole_v4 { ip saddr } log prefix "nft-ban: " counter drop
+    add @ssh_abuse_v6 { ip6 saddr & ffff:ffff:ffff:ffff:: limit rate over 20/minute burst 20 packets } add @ssh_blackhole_v6 { ip6 saddr & ffff:ffff:ffff:ffff:: } log prefix "nft-ban: " counter drop
   }
 
   chain inbound {
     type filter hook input priority filter; policy drop;
     iifname "lo" accept
-${admin_rules}    ct state vmap { invalid : drop, established : accept, related : accept }
+${admin_rules}    ip saddr @block_v4 counter drop
+    ip6 saddr @block_v6 counter drop
+    ip saddr @ssh_blackhole_v4 counter drop
+    ip6 saddr & ffff:ffff:ffff:ffff:: @ssh_blackhole_v6 counter drop
+    ct state vmap { invalid : drop, established : accept, related : accept }
 
     # ICMP/ICMPv6: bắt buộc cho NDP (IPv6 sẽ chết nếu chặn) và Path MTU Discovery
     icmpv6 type { nd-router-advert, nd-router-solicit, nd-neighbor-solicit, nd-neighbor-advert, destination-unreachable, packet-too-big, time-exceeded, parameter-problem, mld-listener-query } accept
@@ -179,7 +238,7 @@ fi
 
 echo "====== BẮT ĐẦU TRIỂN KHAI VPS ======"
 echo "Port sẽ mở: SSH=${SSH_PORT} (rate-limit), TCP={${TCP_PORTS:-không}}, UDP={${UDP_PORTS:-không}}"
-echo "Admin IP: ${ADMIN_IPS:-không} | Forward policy: ${FORWARD_POLICY}"
+echo "Admin IP: ${ADMIN_IPS:-không} | Block IP: ${BLOCK_IPS:-không} | Forward policy: ${FORWARD_POLICY}"
 
 echo "[1/8] Kiểm tra xung đột firewall..."
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
@@ -346,6 +405,8 @@ echo
 echo "==> HOÀN TẤT TRIỂN KHAI VPS!"
 echo "- Kiểm tra rule:            nft list ruleset"
 echo "- Xem gói bị firewall chặn: journalctl -k | grep nft-drop"
+echo "- Xem IP bị tự động ban:    journalctl -k | grep nft-ban  (danh sách: nft list set inet firewall ssh_blackhole_v4)"
+echo "- Chặn tay một IP:          nft add element inet firewall block_v4 { 1.2.3.4 }"
 echo "- SSH rate-limit: 6 kết nối mới/phút (burst 5) mỗi IP (IPv6 theo /64), tự xóa khi đăng nhập thành công."
 echo "- Docker: port publish (-p) đi qua chain forward nên KHÔNG bị firewall này chặn;"
 echo "  dịch vụ chỉ dùng nội bộ hãy bind 127.0.0.1:PORT thay vì 0.0.0.0."
